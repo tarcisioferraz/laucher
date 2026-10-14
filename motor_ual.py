@@ -4,6 +4,7 @@ import os
 import sys
 import re
 import random
+import json
 import traceback
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -16,7 +17,7 @@ except Exception:
     pass
 
 # ==========================================
-# MOTOR GRÁFICO E INTERPRETADOR UAL 8.2
+# MOTOR GRÁFICO E INTERPRETADOR UAL 9.0
 # ==========================================
 class MotorUalGrafico:
     def __init__(self, config, caminho_arquivo_ual=None, codigo_puro=None):
@@ -28,14 +29,22 @@ class MotorUalGrafico:
         
         self.largura = 800
         self.altura = 600
-        self.tela = pygame.display.set_mode((self.largura, self.altura))
-        pygame.display.set_caption("UAL Client 8.2 - Physics & Border Events")
+        
+        # Configuração inicial de Tela Cheia ou Janela
+        flags = pygame.FULLSCREEN if config.get("fullscreen", False) else 0
+        self.tela = pygame.display.set_mode((self.largura, self.altura), flags)
+        pygame.display.set_caption("UAL Client 9.0 - Ultimate Engine")
+        
         self.clock = pygame.time.Clock()
         self.fonte_hud = pygame.font.SysFont("segoeui", 16, bold=True)
         
         self.fator_fps = 1.0 
         self.rodando = True
         self.cor_fundo = (15, 17, 26)
+        
+        # Variáveis de Efeitos Especiais (Screen Shake)
+        self.shake_tempo = 0
+        self.shake_intensidade = 0.0
         
         self.sprites = {}
         self.textos = {}
@@ -132,6 +141,14 @@ class MotorUalGrafico:
                 if comando == "DEFINIR_TELA":
                     self.largura, self.altura = int(partes[1]), int(partes[2])
                     self.tela = pygame.display.set_mode((self.largura, self.altura))
+
+                # ================= NOVO: TELA CHEIA VIA SCRIPT =================
+                elif comando == "TELA_CHEIA":
+                    modo = partes[1].upper()
+                    if modo in ("LIGAR", "SIM", "TRUE", "ON"):
+                        self.tela = pygame.display.set_mode((self.largura, self.altura), pygame.FULLSCREEN)
+                    else:
+                        self.tela = pygame.display.set_mode((self.largura, self.altura))
                 
                 elif comando == "DEFINIR_FUNDO_COR":
                     self.cor_fundo = (int(partes[1]), int(partes[2]), int(partes[3]))
@@ -160,6 +177,50 @@ class MotorUalGrafico:
                         if caminho_som not in self.sons: self.sons[caminho_som] = pygame.mixer.Sound(caminho_som)
                         self.sons[caminho_som].play()
                     except: pass
+
+                # NOVO: Tocar som com volume específico (0 a 100)
+                elif comando == "TOCAR_SOM_VOLUME":
+                    caminho_som = self.formatar_caminho(partes[1])
+                    vol = float(partes[2]) / 100.0
+                    try:
+                        if caminho_som not in self.sons: self.sons[caminho_som] = pygame.mixer.Sound(caminho_som)
+                        self.sons[caminho_som].set_volume(max(0.0, min(1.0, vol)))
+                        self.sons[caminho_som].play()
+                    except: pass
+
+                # ================= NOVO: SISTEMA DE SAVE (DATASTORE) =================
+                elif comando == "SALVAR_DADOS":
+                    # SALVAR_DADOS save.json chave valor
+                    arquivo_save = partes[1]
+                    chave = partes[2]
+                    valor = self.variaveis.get(partes[3], partes[3]) if partes[3] in self.variaveis else partes[3]
+                    dados = {}
+                    if os.path.exists(arquivo_save):
+                        try:
+                            with open(arquivo_save, "r") as f: dados = json.load(f)
+                        except: pass
+                    dados[chave] = valor
+                    with open(arquivo_save, "w") as f: json.dump(dados, f)
+
+                elif comando == "CARREGAR_DADOS":
+                    # CARREGAR_DADOS save.json chave variavel_destino
+                    arquivo_save = partes[1]
+                    chave = partes[2]
+                    var_dest = partes[3]
+                    if os.path.exists(arquivo_save):
+                        try:
+                            with open(arquivo_save, "r") as f:
+                                dados = json.load(f)
+                                if chave in dados:
+                                    val = dados[chave]
+                                    self.variaveis[var_dest] = float(val) if isinstance(val, (int, float)) else val
+                        except: pass
+
+                # ================= NOVO: SCREEN SHAKE =================
+                elif comando == "CAMERA_TREMER":
+                    # CAMERA_TREMER intensidade duracao_frames
+                    self.shake_intensidade = float(partes[1])
+                    self.shake_tempo = int(partes[2])
 
                 elif comando == "CRIAR_TEXTO":
                     texto = re.findall(r'"([^"]*)"', linha)[0]
@@ -194,6 +255,14 @@ class MotorUalGrafico:
                     rect = img.get_rect(topleft=(int(x), int(y)))
                     self.sprites[nome] = {"img": img, "rect": rect, "x": x, "y": y, "vx": 0.0, "vy": 0.0, "visivel": True}
 
+                # NOVO: Mudar a cor de um cubo no meio do jogo
+                elif comando == "DEFINIR_COR_SPRITE":
+                    nome = partes[1]
+                    if nome in self.sprites:
+                        r, g, b = int(partes[2]), int(partes[3]), int(partes[4])
+                        sp = self.sprites[nome]
+                        sp["img"].fill((r, g, b))
+
                 elif comando == "DEFINIR_FISICA":
                     nome = partes[1]
                     if nome in self.sprites:
@@ -221,9 +290,7 @@ class MotorUalGrafico:
                             self.sincronizar_pos(sp, sp["x"], self.altura - alt_sp - 1.0)
                             sp["vy"] = -abs(sp["vy"]) if sp["vy"] != 0 else -5.0
 
-                # ================= NOVO: DETECÇÃO DE TOQUE NAS BORDAS =================
                 elif comando == "SE_TOCAR_BORDA":
-                    # Exemplo: SE_TOCAR_BORDA bola baixo perdeu_vida
                     nome_sprite = partes[1]
                     direcao = partes[2].lower()
                     cena_destino = partes[3]
@@ -232,12 +299,10 @@ class MotorUalGrafico:
                         sp = self.sprites[nome_sprite]
                         r = sp["rect"]
                         tocou = False
-                        
                         if direcao == "esquerda" and r.left <= 0: tocou = True
                         elif direcao == "direita" and r.right >= self.largura: tocou = True
                         elif direcao == "topo" and r.top <= 0: tocou = True
                         elif direcao == "baixo" and r.bottom >= self.altura: tocou = True
-                        
                         if tocou:
                             self.executar_bloco(cena_destino, usar_delta=False)
 
@@ -377,8 +442,17 @@ class MotorUalGrafico:
                 if dt > 0.05: dt = 0.05
                 self.fator_fps = dt * 60.0
                 
-                if self.fundo: self.tela.blit(self.fundo, (0, 0))
-                else: self.tela.fill(self.cor_fundo)
+                # 1. CÁLCULO DE SCREEN SHAKE (TREMOR DE CÂMERA)
+                ox, oy = 0, 0
+                if self.shake_tempo > 0:
+                    ox = random.uniform(-self.shake_intensidade, self.shake_intensidade)
+                    oy = random.uniform(-self.shake_intensidade, self.shake_intensidade)
+                    self.shake_tempo -= 1
+                
+                # Renderiza fundo no buffer temporário ou deslocado pelo shake
+                superficie_buffer = pygame.Surface((self.largura, self.altura))
+                if self.fundo: superficie_buffer.blit(self.fundo, (0, 0))
+                else: superficie_buffer.fill(self.cor_fundo)
                 
                 for evento in pygame.event.get():
                     if evento.type == pygame.QUIT: 
@@ -423,16 +497,25 @@ class MotorUalGrafico:
                 if "loop" in self.cenas: 
                     self.executar_bloco("loop", usar_delta=True)
                 
+                # Desenha Sprites com suporte a Camera Shake
                 for dados in self.sprites.values():
                     if dados["visivel"]: 
-                        self.tela.blit(dados["img"], dados["rect"])
+                        rect_ajustado = dados["rect"].copy()
+                        rect_ajustado.x += int(ox)
+                        rect_ajustado.y += int(oy)
+                        superficie_buffer.blit(dados["img"], rect_ajustado)
                         if modo_debug:
-                            pygame.draw.rect(self.tela, (0, 240, 255), dados["rect"], 2)
+                            pygame.draw.rect(superficie_buffer, (0, 240, 255), rect_ajustado, 2)
                     
+                # Desenha Textos com suporte a Camera Shake
                 for dados in self.textos.values():
                     texto_formatado = self.resolver_texto(dados["texto"])
                     surf = dados["fonte"].render(texto_formatado, True, dados["cor"])
-                    self.tela.blit(surf, dados["pos"])
+                    px, py = dados["pos"]
+                    superficie_buffer.blit(surf, (px + int(ox), py + int(oy)))
+                
+                # Copia para a tela principal
+                self.tela.blit(superficie_buffer, (0, 0))
                 
                 self.DesenharHudLunar(teclas)
                 pygame.display.flip()
@@ -446,54 +529,65 @@ class MotorUalGrafico:
 
 
 # ==========================================
-# JOGO DEMO: USANDO O NOVO SE_TOCAR_BORDA
+# JOGO DEMO 9.0: TESTE DE TELA CHEIA E SHAKE
 # ==========================================
-JOGO_PADRAO_RICOCHETE = """# === JOGO: TESTE DE DETECÇÃO DE BORDAS ===
+JOGO_ULTIMATE_DEMO = """# === JOGO ULTIMATE 9.0 ===
 CENA inicio
 DEFINIR_TELA 800 600
 DEFINIR_FUNDO_COR 12 14 24
 
-VAR_CRIAR vidas 3
+# Tenta carregar highscore salvo anteriormente
+CARREGAR_DADOS recorde.json maior_pontos recorde_salvo
 
-CRIAR_CUBO raquete 340 540 130 20 0 240 255
-CRIAR_CUBO bola 390 350 22 22 255 255 255
+VAR_CRIAR pontos 0
+VAR_CRIAR recorde_salvo 0
 
-DEFINIR_FISICA bola 7 -7
+CRIAR_CUBO player 375 500 50 50 0 240 255
+CRIAR_CUBO inimigo 380 50 40 40 255 50 90
 
-CRIAR_TEXTO hud_vidas 24 20 15 255 50 90 "VIDAS: {vidas}"
-CRIAR_TEXTO msg_info 18 20 50 140 150 180 "Se a bola tocar embaixo (baixo), você perde vida!"
+DEFINIR_FISICA inimigo 5 4
 
-AO_SEGURAR_MOVER a raquete -12 0
-AO_SEGURAR_MOVER d raquete 12 0
-AO_TECLAR r resetar_jogo
+CRIAR_TEXTO hud_pts 22 20 15 0 240 255 "PONTOS: {pontos}"
+CRIAR_TEXTO hud_rec 22 20 45 255 215 0 "RECORDE: {recorde_salvo}"
+CRIAR_TEXTO ajuda 16 20 560 140 150 180 "[F] Alterna Tela Cheia | [W A S D] Move o Cubo"
+
+AO_SEGURAR_MOVER w player 0 -8
+AO_SEGURAR_MOVER s player 0 8
+AO_SEGURAR_MOVER a player -8 0
+AO_SEGURAR_MOVER d player 8 0
+
+AO_TECLAR f alternar_tela
+AO_TECLAR r salvar_pontuacao
 FIM_CENA
 
 CENA loop
-LIMITAR_TELA raquete
-REBATER_TELA bola
-REBATER_OBJETO bola raquete
-
-# DETECTA QUANDO A BOLA TOCA O RODAPÉ DA TELA!
-SE_TOCAR_BORDA bola baixo perder_vida
+LIMITAR_TELA player
+REBATER_TELA inimigo
+REBATER_OBJETO inimigo player bateu_no_player
+VAR_SOMA pontos 1
+ATUALIZAR_TEXTO hud_pts "PONTOS: {pontos}"
 FIM_CENA
 
-CENA perder_vida
-VAR_SUBTRAIR vidas 1
-ATUALIZAR_TEXTO hud_vidas "VIDAS: {vidas}"
-MOVER_PARA bola 390 350
-DEFINIR_FISICA bola 7 -7
+CENA bateu_no_player
+# TREME A CÂMERA COM INTENSIDADE 12 DURANTE 20 FRAMES!
+CAMERA_TREMER 12 20
+DEFINIR_COR_SPRITE player 255 0 0
 FIM_CENA
 
-CENA resetar_jogo
-VAR_CRIAR vidas 3
-ATUALIZAR_TEXTO hud_vidas "VIDAS: 3"
-MOVER_PARA bola 390 350
-DEFINIR_FISICA bola 7 -7
+CENA alternar_tela
+# Exemplo de comando direto para ligar/desligar tela cheia!
+TELA_CHEIA LIGAR
+FIM_CENA
+
+CENA salvar_pontuacao
+SALVAR_DADOS recorde.json maior_pontos pontos
+ATUALIZAR_TEXTO hud_rec "RECORDE: {pontos}"
 FIM_CENA
 """
 
+
 # ==========================================
-# LUNAR CLIENT STYLE LAUNCHER
+# LUNAR CLIENT STYLE LAUNCHER (COM TELA CHEIA)
 # ==========================================
 class LunarLauncherUAL:
     def __init__(self):
@@ -512,6 +606,7 @@ class LunarLauncherUAL:
         self.c_sub = "#7a8299"
         
         self.var_fps = tk.StringVar(value="Ilimitado")
+        self.var_fullscreen = tk.BooleanVar(value=False) # <--- OPÇÃO DE TELA CHEIA NO LAUNCHER
         self.var_show_fps = tk.BooleanVar(value=True)
         self.var_keystrokes = tk.BooleanVar(value=True)
         self.var_debug = tk.BooleanVar(value=False)
@@ -530,9 +625,9 @@ class LunarLauncherUAL:
         
         self.criar_botao_menu(sidebar, "⚡  JOGAR AGORA", lambda: self.trocar_aba(self.aba_play))
         self.criar_botao_menu(sidebar, "💻  SCRIPT STUDIO", lambda: self.trocar_aba(self.aba_script))
-        self.criar_botao_menu(sidebar, "🛠️  MODS & FPS", lambda: self.trocar_aba(self.aba_mods))
+        self.criar_botao_menu(sidebar, "🛠️  MODS & TELA CHEIA", lambda: self.trocar_aba(self.aba_mods))
         
-        lbl_status = tk.Label(sidebar, text="● Border Events (v8.2)", font=("Segoe UI", 9, "bold"), bg=self.c_sidebar, fg=self.c_green)
+        lbl_status = tk.Label(sidebar, text="● Ultimate Engine (v9.0)", font=("Segoe UI", 9, "bold"), bg=self.c_sidebar, fg=self.c_green)
         lbl_status.pack(side="bottom", pady=20)
         
         self.main_area = tk.Frame(self.root, bg=self.c_bg)
@@ -561,6 +656,7 @@ class LunarLauncherUAL:
         fps_val = 0 if "Ilimitado" in fps_str else int(fps_str.split()[0])
         return {
             "fps": fps_val,
+            "fullscreen": self.var_fullscreen.get(),
             "mostrar_fps": self.var_show_fps.get(),
             "keystrokes": self.var_keystrokes.get(),
             "modo_debug": self.var_debug.get()
@@ -573,14 +669,14 @@ class LunarLauncherUAL:
         banner.pack(fill="x", padx=40, pady=35)
         banner.pack_propagate(False)
         
-        tk.Label(banner, text="UAL ENGINE 8.2 // BORDER EVENTS", font=("Segoe UI", 10, "bold"), bg=self.c_card, fg=self.c_accent).pack(anchor="w", padx=30, pady=(25, 5))
-        tk.Label(banner, text="DETECÇÃO DE BORDAS ADICIONADA", font=("Segoe UI", 26, "bold"), bg=self.c_card, fg="white").pack(anchor="w", padx=30)
-        tk.Label(banner, text="Comando SE_TOCAR_BORDA • Exclusivo .UAL • Delta Time Estável", font=("Segoe UI", 11), bg=self.c_card, fg=self.c_sub).pack(anchor="w", padx=30, pady=5)
+        tk.Label(banner, text="UAL ENGINE 9.0 // ULTIMATE EDITION", font=("Segoe UI", 10, "bold"), bg=self.c_card, fg=self.c_accent).pack(anchor="w", padx=30, pady=(25, 5))
+        tk.Label(banner, text="TELA CHEIA & 1000 FUNCIONALIDADES", font=("Segoe UI", 26, "bold"), bg=self.c_card, fg="white").pack(anchor="w", padx=30)
+        tk.Label(banner, text="Screen Shake • DataStore Save • Tinting de Cores • Fullscreen NativO", font=("Segoe UI", 11), bg=self.c_card, fg=self.c_sub).pack(anchor="w", padx=30, pady=5)
         
         f_botoes = tk.Frame(self.aba_play, bg=self.c_bg)
         f_botoes.pack(fill="x", padx=40, pady=10)
         
-        btn_launch = tk.Button(f_botoes, text="🚀  LAUNCH SCRIPT CODE\n(Testar SE_TOCAR_BORDA)", font=("Segoe UI", 15, "bold"),
+        btn_launch = tk.Button(f_botoes, text="🚀  LAUNCH SCRIPT CODE\n(Testar Demo Ultimate 9.0)", font=("Segoe UI", 15, "bold"),
                                bg=self.c_green, fg="#051b0e", activebackground="#00c853", bd=0, pady=18, cursor="hand2", command=self.rodar_script)
         btn_launch.pack(fill="x", pady=10)
         
@@ -600,19 +696,21 @@ class LunarLauncherUAL:
         
         self.text_area = tk.Text(self.aba_script, bg="#10121a", fg="#00f0ff", font=("Consolas", 11), insertbackground="white", bd=0, padx=15, pady=15)
         self.text_area.pack(fill="both", expand=True, padx=30, pady=(0, 25))
-        self.text_area.insert("1.0", JOGO_PADRAO_RICOCHETE)
+        self.text_area.insert("1.0", JOGO_ULTIMATE_DEMO)
 
     def construir_aba_mods(self):
         self.aba_mods = tk.Frame(self.main_area, bg=self.c_bg)
-        tk.Label(self.aba_mods, text="LUNAR MODS & PERFORMANCE", font=("Segoe UI", 18, "bold"), bg=self.c_bg, fg="white").pack(anchor="w", padx=40, pady=(25, 20))
+        tk.Label(self.aba_mods, text="LUNAR SETTINGS & DISPLAY", font=("Segoe UI", 18, "bold"), bg=self.c_bg, fg="white").pack(anchor="w", padx=40, pady=(25, 20))
         
-        self.criar_card_mod(self.aba_mods, "📊 Contador de FPS (HUD)", "Exibe a taxa de quadros em tempo real no canto superior direito.", self.var_show_fps)
-        self.criar_card_mod(self.aba_mods, "⌨️ Keystrokes Mod", "Mostra as teclas W, A, S, D na tela acendendo em Ciano quando pressionadas.", self.var_keystrokes)
-        self.criar_card_mod(self.aba_mods, "🟩 Hitbox Viewer (Modo Debug)", "Desenha bordas neon ao redor da colisão de todos os objetos vivos.", self.var_debug)
+        # Checkbox Tela Cheia no Launcher
+        self.criar_card_mod(self.aba_mods, "🖥️ Modo Tela Cheia (Fullscreen)", "Inicia o jogo ocupando 100% da sua tela nativa.", self.var_fullscreen)
+        self.criar_card_mod(self.aba_mods, "📊 Contador de FPS (HUD)", "Exibe a taxa de quadros em tempo real.", self.var_show_fps)
+        self.criar_card_mod(self.aba_mods, "⌨️ Keystrokes Mod", "Mostra as teclas W, A, S, D na tela acendendo em Ciano.", self.var_keystrokes)
+        self.criar_card_mod(self.aba_mods, "🟩 Hitbox Viewer (Modo Debug)", "Desenha bordas neon ao redor da colisão dos objetos.", self.var_debug)
         
         card_fps = tk.Frame(self.aba_mods, bg=self.c_card, padx=20, pady=15)
         card_fps.pack(fill="x", padx=40, pady=8)
-        tk.Label(card_fps, text="🚀 Limite de Taxa de Quadros (FPS Boost):", font=("Segoe UI", 12, "bold"), bg=self.c_card, fg="white").pack(side="left")
+        tk.Label(card_fps, text="🚀 Limite de FPS Boost:", font=("Segoe UI", 12, "bold"), bg=self.c_card, fg="white").pack(side="left")
         
         combo = ttk.Combobox(card_fps, textvariable=self.var_fps, values=["60 FPS", "120 FPS", "144 FPS", "240 FPS", "Ilimitado (Max Boost)"], state="readonly", font=("Segoe UI", 10), width=22)
         combo.pack(side="right")
