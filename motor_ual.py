@@ -16,7 +16,7 @@ except Exception:
     pass
 
 # ==========================================
-# MOTOR GRÁFICO E INTERPRETADOR UAL 8.1
+# MOTOR GRÁFICO E INTERPRETADOR UAL 8.2
 # ==========================================
 class MotorUalGrafico:
     def __init__(self, config, caminho_arquivo_ual=None, codigo_puro=None):
@@ -29,7 +29,7 @@ class MotorUalGrafico:
         self.largura = 800
         self.altura = 600
         self.tela = pygame.display.set_mode((self.largura, self.altura))
-        pygame.display.set_caption("UAL Client 8.1 - Physics Engine (Corner Fix)")
+        pygame.display.set_caption("UAL Client 8.2 - Physics & Border Events")
         self.clock = pygame.time.Clock()
         self.fonte_hud = pygame.font.SysFont("segoeui", 16, bold=True)
         
@@ -99,7 +99,6 @@ class MotorUalGrafico:
         return texto_bruto
 
     def sincronizar_pos(self, sp, novo_x, novo_y):
-        """Sincroniza perfeitamente o float com o rect inteiro do Pygame"""
         sp["x"] = float(novo_x)
         sp["y"] = float(novo_y)
         sp["rect"].x = int(round(sp["x"]))
@@ -195,7 +194,6 @@ class MotorUalGrafico:
                     rect = img.get_rect(topleft=(int(x), int(y)))
                     self.sprites[nome] = {"img": img, "rect": rect, "x": x, "y": y, "vx": 0.0, "vy": 0.0, "visivel": True}
 
-                # ================= FÍSICA E REBATE CORRIGIDOS (SEM BUG DE CANTO) =================
                 elif comando == "DEFINIR_FISICA":
                     nome = partes[1]
                     if nome in self.sprites:
@@ -209,7 +207,6 @@ class MotorUalGrafico:
                         larg_sp = sp["rect"].width
                         alt_sp = sp["rect"].height
                         
-                        # Verifica o eixo X diretamente na coordenada float e ejeta com margem de 1px
                         if sp["x"] <= 0:
                             self.sincronizar_pos(sp, 1.0, sp["y"])
                             sp["vx"] = abs(sp["vx"]) if sp["vx"] != 0 else 5.0
@@ -217,13 +214,32 @@ class MotorUalGrafico:
                             self.sincronizar_pos(sp, self.largura - larg_sp - 1.0, sp["y"])
                             sp["vx"] = -abs(sp["vx"]) if sp["vx"] != 0 else -5.0
                             
-                        # Verifica o eixo Y diretamente na coordenada float e ejeta com margem de 1px
                         if sp["y"] <= 0:
                             self.sincronizar_pos(sp, sp["x"], 1.0)
                             sp["vy"] = abs(sp["vy"]) if sp["vy"] != 0 else 5.0
                         elif sp["y"] + alt_sp >= self.altura:
                             self.sincronizar_pos(sp, sp["x"], self.altura - alt_sp - 1.0)
                             sp["vy"] = -abs(sp["vy"]) if sp["vy"] != 0 else -5.0
+
+                # ================= NOVO: DETECÇÃO DE TOQUE NAS BORDAS =================
+                elif comando == "SE_TOCAR_BORDA":
+                    # Exemplo: SE_TOCAR_BORDA bola baixo perdeu_vida
+                    nome_sprite = partes[1]
+                    direcao = partes[2].lower()
+                    cena_destino = partes[3]
+                    
+                    if nome_sprite in self.sprites and self.sprites[nome_sprite]["visivel"]:
+                        sp = self.sprites[nome_sprite]
+                        r = sp["rect"]
+                        tocou = False
+                        
+                        if direcao == "esquerda" and r.left <= 0: tocou = True
+                        elif direcao == "direita" and r.right >= self.largura: tocou = True
+                        elif direcao == "topo" and r.top <= 0: tocou = True
+                        elif direcao == "baixo" and r.bottom >= self.altura: tocou = True
+                        
+                        if tocou:
+                            self.executar_bloco(cena_destino, usar_delta=False)
 
                 elif comando == "REBATER_OBJETO":
                     nome1, nome2 = partes[1], partes[2]
@@ -233,56 +249,32 @@ class MotorUalGrafico:
                         s1, s2 = self.sprites[nome1], self.sprites[nome2]
                         if s1["visivel"] and s2["visivel"] and s1["rect"].colliderect(s2["rect"]):
                             r1, r2 = s1["rect"], s2["rect"]
-                            
-                            # Calcula distância entre os centros e sobreposição real
                             dx = r1.centerx - r2.centerx
                             dy = r1.centery - r2.centery
                             
                             overlap_x = (r1.width / 2.0 + r2.width / 2.0) - abs(dx)
                             overlap_y = (r1.height / 2.0 + r2.height / 2.0) - abs(dy)
                             
-                            # Se bateu exatamente no canto (diferença menor que 4 pixels), rebate nos dois eixos!
                             if abs(overlap_x - overlap_y) < 4.0:
-                                if dx > 0:
-                                    s1["vx"] = abs(s1["vx"])
-                                    novo_x = r2.right + 2.0
-                                else:
-                                    s1["vx"] = -abs(s1["vx"])
-                                    novo_x = r2.left - r1.width - 2.0
+                                if dx > 0: s1["vx"] = abs(s1["vx"]); novo_x = r2.right + 2.0
+                                else: s1["vx"] = -abs(s1["vx"]); novo_x = r2.left - r1.width - 2.0
                                     
-                                if dy > 0:
-                                    s1["vy"] = abs(s1["vy"])
-                                    novo_y = r2.bottom + 2.0
-                                else:
-                                    s1["vy"] = -abs(s1["vy"])
-                                    novo_y = r2.top - r1.height - 2.0
+                                if dy > 0: s1["vy"] = abs(s1["vy"]); novo_y = r2.bottom + 2.0
+                                else: s1["vy"] = -abs(s1["vy"]); novo_y = r2.top - r1.height - 2.0
                                     
                                 self.sincronizar_pos(s1, novo_x, novo_y)
-                                
-                            # Colisão Horizontal (Bateu na lateral esquerda ou direita do bloco)
                             elif overlap_x < overlap_y:
-                                if dx > 0: # Veio da direita
-                                    self.sincronizar_pos(s1, r2.right + 2.0, s1["y"])
-                                    s1["vx"] = abs(s1["vx"])
-                                else:      # Veio da esquerda
-                                    self.sincronizar_pos(s1, r2.left - r1.width - 2.0, s1["y"])
-                                    s1["vx"] = -abs(s1["vx"])
-                                    
-                            # Colisão Vertical (Bateu no topo ou embaixo do bloco/raquete)
+                                if dx > 0: self.sincronizar_pos(s1, r2.right + 2.0, s1["y"]); s1["vx"] = abs(s1["vx"])
+                                else: self.sincronizar_pos(s1, r2.left - r1.width - 2.0, s1["y"]); s1["vx"] = -abs(s1["vx"])
                             else:
-                                if dy > 0: # Bateu por baixo
-                                    self.sincronizar_pos(s1, s1["x"], r2.bottom + 2.0)
-                                    s1["vy"] = abs(s1["vy"])
-                                else:      # Bateu por cima (Ex: na raquete)
-                                    self.sincronizar_pos(s1, s1["x"], r2.top - r1.height - 2.0)
-                                    s1["vy"] = -abs(s1["vy"])
+                                if dy > 0: self.sincronizar_pos(s1, s1["x"], r2.bottom + 2.0); s1["vy"] = abs(s1["vy"])
+                                else: self.sincronizar_pos(s1, s1["x"], r2.top - r1.height - 2.0); s1["vy"] = -abs(s1["vy"])
                                     
-                                    # Efeito Arkanoid: Se bater nos cantos de objetos largos (como a raquete), angula o tiro!
-                                    if r2.width >= 80:
-                                        fator_canto = (r1.centerx - r2.centerx) / (r2.width / 2.0)
-                                        velocidade_base = max(abs(s1["vx"]), 6.0)
-                                        if abs(fator_canto) > 0.35:
-                                            s1["vx"] = velocidade_base * (1.0 if fator_canto > 0 else -1.0)
+                                if r2.width >= 80:
+                                    fator_canto = (r1.centerx - r2.centerx) / (r2.width / 2.0)
+                                    velocidade_base = max(abs(s1["vx"]), 6.0)
+                                    if abs(fator_canto) > 0.35:
+                                        s1["vx"] = velocidade_base * (1.0 if fator_canto > 0 else -1.0)
                                 
                             if cena_colisao:
                                 self.executar_bloco(cena_colisao, usar_delta=False)
@@ -317,13 +309,10 @@ class MotorUalGrafico:
                         larg_sp = sp["rect"].width
                         alt_sp = sp["rect"].height
                         nx, ny = sp["x"], sp["y"]
-                        
                         if nx < 0: nx = 0.0
                         elif nx + larg_sp > self.largura: nx = float(self.largura - larg_sp)
-                        
                         if ny < 0: ny = 0.0
                         elif ny + alt_sp > self.altura: ny = float(self.altura - alt_sp)
-                        
                         self.sincronizar_pos(sp, nx, ny)
                         
                 elif comando == "SE_COLIDIR":
@@ -385,7 +374,7 @@ class MotorUalGrafico:
             
             while self.rodando:
                 dt = self.clock.tick(tick_rate) / 1000.0
-                if dt > 0.05: dt = 0.05 # Limite mais rígido para impedir que objetos atravessem paredes em travadas
+                if dt > 0.05: dt = 0.05
                 self.fator_fps = dt * 60.0
                 
                 if self.fundo: self.tela.blit(self.fundo, (0, 0))
@@ -425,7 +414,6 @@ class MotorUalGrafico:
                                 self.sincronizar_pos(sp, nx, ny)
                     except: pass
 
-                # ATUALIZA FÍSICA AUTOMÁTICA (Em sub-passos se a velocidade for alta para nunca atravessar cantos!)
                 for sp in self.sprites.values():
                     if sp["visivel"] and (sp["vx"] != 0 or sp["vy"] != 0):
                         nx = sp["x"] + sp["vx"] * self.fator_fps
@@ -458,91 +446,49 @@ class MotorUalGrafico:
 
 
 # ==========================================
-# JOGO DEMO: NEON BREAKER (COM REBATE PERFEITO)
+# JOGO DEMO: USANDO O NOVO SE_TOCAR_BORDA
 # ==========================================
-JOGO_PADRAO_RICOCHETE = """# === JOGO: NEON BREAKER (FÍSICA DE CANTOS CORRIGIDA) ===
+JOGO_PADRAO_RICOCHETE = """# === JOGO: TESTE DE DETECÇÃO DE BORDAS ===
 CENA inicio
 DEFINIR_TELA 800 600
 DEFINIR_FUNDO_COR 12 14 24
 
-VAR_CRIAR pontos 0
+VAR_CRIAR vidas 3
 
-# Raquete do Jogador (Ciano) e Bola de Energia (Branca)
 CRIAR_CUBO raquete 340 540 130 20 0 240 255
 CRIAR_CUBO bola 390 350 22 22 255 255 255
 
-# Obstáculo Fixo no Meio (Roxo) que faz a bola rebater!
-CRIAR_CUBO pilar_central 330 250 140 25 160 60 255
+DEFINIR_FISICA bola 7 -7
 
-# Blocos Destrutíveis no Topo (Rosa, Ouro, Verde, Azul)
-CRIAR_CUBO bloco1 80 100 130 35 255 40 100
-CRIAR_CUBO bloco2 250 100 130 35 255 215 0
-CRIAR_CUBO bloco3 420 100 130 35 0 230 118
-CRIAR_CUBO bloco4 590 100 130 35 0 180 255
+CRIAR_TEXTO hud_vidas 24 20 15 255 50 90 "VIDAS: {vidas}"
+CRIAR_TEXTO msg_info 18 20 50 140 150 180 "Se a bola tocar embaixo (baixo), você perde vida!"
 
-# Dá velocidade inicial para a bola (VX = 6, VY = -6)
-DEFINIR_FISICA bola 6 -6
-
-# Interface
-CRIAR_TEXTO hud_pts 24 20 15 0 240 255 "SCORE: {pontos}"
-CRIAR_TEXTO msg_info 18 20 50 140 150 180 "Use [A] e [D] para rebater! Aperte [R] para resetar"
-
-# Controles
-AO_SEGURAR_MOVER a raquete -11 0
-AO_SEGURAR_MOVER d raquete 11 0
+AO_SEGURAR_MOVER a raquete -12 0
+AO_SEGURAR_MOVER d raquete 12 0
 AO_TECLAR r resetar_jogo
 FIM_CENA
 
 CENA loop
 LIMITAR_TELA raquete
-
-# Faz a bola quicar nas bordas da tela sem prender nos cantos
 REBATER_TELA bola
-
-# Faz a bola rebater na raquete e no pilar roxo central!
 REBATER_OBJETO bola raquete
-REBATER_OBJETO bola pilar_central
 
-# Faz a bola rebater nos blocos do topo e chama a cena de quebrar cada um!
-REBATER_OBJETO bola bloco1 quebrar_b1
-REBATER_OBJETO bola bloco2 quebrar_b2
-REBATER_OBJETO bola bloco3 quebrar_b3
-REBATER_OBJETO bola bloco4 quebrar_b4
+# DETECTA QUANDO A BOLA TOCA O RODAPÉ DA TELA!
+SE_TOCAR_BORDA bola baixo perder_vida
 FIM_CENA
 
-CENA quebrar_b1
-OCULTAR_SPRITE bloco1
-VAR_SOMA pontos 100
-ATUALIZAR_TEXTO hud_pts "SCORE: {pontos}"
-FIM_CENA
-
-CENA quebrar_b2
-OCULTAR_SPRITE bloco2
-VAR_SOMA pontos 100
-ATUALIZAR_TEXTO hud_pts "SCORE: {pontos}"
-FIM_CENA
-
-CENA quebrar_b3
-OCULTAR_SPRITE bloco3
-VAR_SOMA pontos 100
-ATUALIZAR_TEXTO hud_pts "SCORE: {pontos}"
-FIM_CENA
-
-CENA quebrar_b4
-OCULTAR_SPRITE bloco4
-VAR_SOMA pontos 100
-ATUALIZAR_TEXTO hud_pts "SCORE: {pontos}"
+CENA perder_vida
+VAR_SUBTRAIR vidas 1
+ATUALIZAR_TEXTO hud_vidas "VIDAS: {vidas}"
+MOVER_PARA bola 390 350
+DEFINIR_FISICA bola 7 -7
 FIM_CENA
 
 CENA resetar_jogo
-VAR_CRIAR pontos 0
-ATUALIZAR_TEXTO hud_pts "SCORE: 0"
-MOSTRAR_SPRITE bloco1
-MOSTRAR_SPRITE bloco2
-MOSTRAR_SPRITE bloco3
-MOSTRAR_SPRITE bloco4
+VAR_CRIAR vidas 3
+ATUALIZAR_TEXTO hud_vidas "VIDAS: 3"
 MOVER_PARA bola 390 350
-DEFINIR_FISICA bola 6 -6
+DEFINIR_FISICA bola 7 -7
 FIM_CENA
 """
 
@@ -586,7 +532,7 @@ class LunarLauncherUAL:
         self.criar_botao_menu(sidebar, "💻  SCRIPT STUDIO", lambda: self.trocar_aba(self.aba_script))
         self.criar_botao_menu(sidebar, "🛠️  MODS & FPS", lambda: self.trocar_aba(self.aba_mods))
         
-        lbl_status = tk.Label(sidebar, text="● Physics Engine (v8.1)", font=("Segoe UI", 9, "bold"), bg=self.c_sidebar, fg=self.c_green)
+        lbl_status = tk.Label(sidebar, text="● Border Events (v8.2)", font=("Segoe UI", 9, "bold"), bg=self.c_sidebar, fg=self.c_green)
         lbl_status.pack(side="bottom", pady=20)
         
         self.main_area = tk.Frame(self.root, bg=self.c_bg)
@@ -627,14 +573,14 @@ class LunarLauncherUAL:
         banner.pack(fill="x", padx=40, pady=35)
         banner.pack_propagate(False)
         
-        tk.Label(banner, text="UAL ENGINE 8.1 // CORNER COLLISION FIX", font=("Segoe UI", 10, "bold"), bg=self.c_card, fg=self.c_accent).pack(anchor="w", padx=30, pady=(25, 5))
-        tk.Label(banner, text="FÍSICA DE RICOCHETE CORRIGIDA", font=("Segoe UI", 26, "bold"), bg=self.c_card, fg="white").pack(anchor="w", padx=30)
-        tk.Label(banner, text="Anti-Tunneling nos Cantos • Impulso Angular na Raquete • Exclusivo .UAL", font=("Segoe UI", 11), bg=self.c_card, fg=self.c_sub).pack(anchor="w", padx=30, pady=5)
+        tk.Label(banner, text="UAL ENGINE 8.2 // BORDER EVENTS", font=("Segoe UI", 10, "bold"), bg=self.c_card, fg=self.c_accent).pack(anchor="w", padx=30, pady=(25, 5))
+        tk.Label(banner, text="DETECÇÃO DE BORDAS ADICIONADA", font=("Segoe UI", 26, "bold"), bg=self.c_card, fg="white").pack(anchor="w", padx=30)
+        tk.Label(banner, text="Comando SE_TOCAR_BORDA • Exclusivo .UAL • Delta Time Estável", font=("Segoe UI", 11), bg=self.c_card, fg=self.c_sub).pack(anchor="w", padx=30, pady=5)
         
         f_botoes = tk.Frame(self.aba_play, bg=self.c_bg)
         f_botoes.pack(fill="x", padx=40, pady=10)
         
-        btn_launch = tk.Button(f_botoes, text="🚀  LAUNCH SCRIPT CODE\n(Jogar Demo: Neon Breaker)", font=("Segoe UI", 15, "bold"),
+        btn_launch = tk.Button(f_botoes, text="🚀  LAUNCH SCRIPT CODE\n(Testar SE_TOCAR_BORDA)", font=("Segoe UI", 15, "bold"),
                                bg=self.c_green, fg="#051b0e", activebackground="#00c853", bd=0, pady=18, cursor="hand2", command=self.rodar_script)
         btn_launch.pack(fill="x", pady=10)
         
