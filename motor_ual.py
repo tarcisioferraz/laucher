@@ -3,6 +3,7 @@ import zipfile
 import os
 import sys
 import re
+import math
 import random
 import json
 import traceback
@@ -33,7 +34,7 @@ class MotorUalGrafico:
         # Configuração inicial de Tela Cheia ou Janela
         flags = pygame.FULLSCREEN if config.get("fullscreen", False) else 0
         self.tela = pygame.display.set_mode((self.largura, self.altura), flags)
-        pygame.display.set_caption("UAL Client 9.0 - Ultimate Engine")
+        pygame.display.set_caption("UAL Client 9.1 - Ultimate Engine")
         
         self.clock = pygame.time.Clock()
         self.fonte_hud = pygame.font.SysFont("segoeui", 16, bold=True)
@@ -56,6 +57,10 @@ class MotorUalGrafico:
         self.eventos_clique = {}
         self.cenas = {}
         self.variaveis = {}
+        self.temporizadores = {}
+        self.deslizamentos = {}
+        self.alvos = {}
+        self.profundidade_nova_cena = 0
         self.pasta_temp = ""
         
         if caminho_arquivo_ual:
@@ -113,6 +118,188 @@ class MotorUalGrafico:
         sp["rect"].x = int(round(sp["x"]))
         sp["rect"].y = int(round(sp["y"]))
 
+    def converter_numero(self, valor):
+        valor = self.variaveis.get(valor, valor)
+        return float(valor)
+
+    def executar_repeticoes(self, quantidade, nome_cena, usar_delta):
+        quantidade = float(quantidade)
+        if not quantidade.is_integer():
+            raise ValueError("REPETIR_CENA exige uma quantidade inteira.")
+        quantidade = int(quantidade)
+        if quantidade < 0 or quantidade > 1000:
+            raise ValueError("REPETIR_CENA aceita uma quantidade entre 0 e 1000.")
+        for _ in range(quantidade):
+            if not self.rodando:
+                break
+            self.chamar_cena(nome_cena, usar_delta)
+
+    def chamar_cena(self, nome_cena, usar_delta=False):
+        if self.profundidade_nova_cena >= 32:
+            raise RuntimeError("Limite de 32 chamadas aninhadas de cena excedido.")
+        self.profundidade_nova_cena += 1
+        try:
+            self.executar_bloco(nome_cena, usar_delta)
+        finally:
+            self.profundidade_nova_cena -= 1
+
+    def rebater_raquete(self, bola, raquete):
+        if bola not in self.sprites or raquete not in self.sprites:
+            return False
+
+        sp_bola = self.sprites[bola]
+        sp_raquete = self.sprites[raquete]
+        if not sp_bola["visivel"] or not sp_raquete["visivel"]:
+            return False
+
+        rect_bola = sp_bola["rect"]
+        rect_raquete = sp_raquete["rect"]
+        inicio_y = sp_bola.get("prev_y", sp_bola["y"])
+        if sp_bola["vy"] <= 0 or inicio_y >= rect_raquete.top:
+            return False
+
+        cruzou_topo = (
+            rect_bola.bottom >= rect_raquete.top
+            and inicio_y + rect_bola.height <= rect_raquete.top
+        )
+        if not rect_bola.colliderect(rect_raquete) and not cruzou_topo:
+            return False
+
+        x_contato = sp_bola["x"]
+        if cruzou_topo:
+            delta_y = sp_bola["y"] - inicio_y
+            if delta_y <= 0:
+                return False
+            tempo_impacto = (rect_raquete.top - rect_bola.height - inicio_y) / delta_y
+            x_contato = sp_bola.get("prev_x", sp_bola["x"]) + (
+                sp_bola["x"] - sp_bola.get("prev_x", sp_bola["x"])
+            ) * tempo_impacto
+            if x_contato + rect_bola.width <= rect_raquete.left or x_contato >= rect_raquete.right:
+                return False
+
+        deslocamento = (
+            x_contato + rect_bola.width / 2 - rect_raquete.centerx
+        ) / max(rect_raquete.width / 2, 1)
+        deslocamento = max(-1.0, min(1.0, deslocamento))
+        velocidade = max(math.hypot(sp_bola["vx"], sp_bola["vy"]), 5.0)
+        angulo = deslocamento * math.radians(60)
+
+        self.sincronizar_pos(
+            sp_bola,
+            x_contato,
+            rect_raquete.top - rect_bola.height - 1,
+        )
+        sp_bola["prev_x"] = sp_bola["x"]
+        sp_bola["prev_y"] = sp_bola["y"]
+        sp_bola["vx"] = velocidade * math.sin(angulo)
+        sp_bola["vy"] = -velocidade * math.cos(angulo)
+        return True
+
+    def rebater_trajetoria(self, nome, obstaculo):
+        if nome not in self.sprites or obstaculo not in self.sprites:
+            return False
+
+        sp = self.sprites[nome]
+        alvo = self.sprites[obstaculo]
+        if not sp["visivel"] or not alvo["visivel"]:
+            return False
+
+        rect = sp["rect"]
+        limite = alvo["rect"]
+        inicio_x = sp.get("prev_x", sp["x"])
+        inicio_y = sp.get("prev_y", sp["y"])
+        delta_x = sp["x"] - inicio_x
+        delta_y = sp["y"] - inicio_y
+        if delta_x == 0 and delta_y == 0:
+            return False
+
+        esquerda = limite.left - rect.width
+        direita = limite.right
+        topo = limite.top - rect.height
+        baixo = limite.bottom
+
+        if delta_x > 0:
+            entrada_x = (esquerda - inicio_x) / delta_x
+            saida_x = (direita - inicio_x) / delta_x
+        elif delta_x < 0:
+            entrada_x = (direita - inicio_x) / delta_x
+            saida_x = (esquerda - inicio_x) / delta_x
+        else:
+            entrada_x = -math.inf if esquerda <= inicio_x <= direita else math.inf
+            saida_x = math.inf
+
+        if delta_y > 0:
+            entrada_y = (topo - inicio_y) / delta_y
+            saida_y = (baixo - inicio_y) / delta_y
+        elif delta_y < 0:
+            entrada_y = (baixo - inicio_y) / delta_y
+            saida_y = (topo - inicio_y) / delta_y
+        else:
+            entrada_y = -math.inf if topo <= inicio_y <= baixo else math.inf
+            saida_y = math.inf
+
+        tempo_entrada = max(entrada_x, entrada_y)
+        tempo_saida = min(saida_x, saida_y)
+        if tempo_entrada > tempo_saida or tempo_saida < 0 or tempo_entrada > 1:
+            return False
+
+        tempo_impacto = max(tempo_entrada, 0)
+        x = inicio_x + delta_x * tempo_impacto
+        y = inicio_y + delta_y * tempo_impacto
+        if entrada_x > entrada_y:
+            x = esquerda - 1 if delta_x > 0 else direita + 1
+            sp["vx"] = -sp["vx"]
+        elif entrada_y > entrada_x:
+            y = topo - 1 if delta_y > 0 else baixo + 1
+            sp["vy"] = -sp["vy"]
+        else:
+            x = esquerda - 1 if delta_x > 0 else direita + 1
+            y = topo - 1 if delta_y > 0 else baixo + 1
+            sp["vx"] = -sp["vx"]
+            sp["vy"] = -sp["vy"]
+
+        self.sincronizar_pos(sp, x, y)
+        sp["prev_x"] = sp["x"]
+        sp["prev_y"] = sp["y"]
+        return True
+
+    def atualizar_movimentos_especiais(self):
+        for nome, destino in list(self.deslizamentos.items()):
+            sp = self.sprites.get(nome)
+            if not sp or not sp["visivel"]:
+                continue
+
+            dx = destino["x"] - sp["x"]
+            dy = destino["y"] - sp["y"]
+            distancia = math.hypot(dx, dy)
+            passo = destino["velocidade"] * self.fator_fps
+            if distancia <= passo or distancia == 0:
+                self.sincronizar_pos(sp, destino["x"], destino["y"])
+                del self.deslizamentos[nome]
+            else:
+                self.sincronizar_pos(
+                    sp,
+                    sp["x"] + dx / distancia * passo,
+                    sp["y"] + dy / distancia * passo,
+                )
+
+        for nome, alvo in list(self.alvos.items()):
+            sp = self.sprites.get(nome)
+            alvo_sp = self.sprites.get(alvo["sprite"])
+            if not sp or not sp["visivel"] or not alvo_sp or not alvo_sp["visivel"]:
+                continue
+
+            dx = alvo_sp["x"] - sp["x"]
+            dy = alvo_sp["y"] - sp["y"]
+            distancia = math.hypot(dx, dy)
+            passo = alvo["velocidade"] * self.fator_fps
+            if distancia > passo and distancia > 0:
+                self.sincronizar_pos(
+                    sp,
+                    sp["x"] + dx / distancia * passo,
+                    sp["y"] + dy / distancia * passo,
+                )
+
     def executar_bloco(self, nome_cena, usar_delta=False):
         if nome_cena not in self.cenas or not self.rodando: return
         escala = self.fator_fps if usar_delta else 1.0
@@ -156,6 +343,34 @@ class MotorUalGrafico:
                 elif comando == "VAR_CRIAR": self.variaveis[partes[1]] = float(partes[2]) if "." in partes[2] else int(partes[2])
                 elif comando == "VAR_SOMA": self.variaveis[partes[1]] += float(partes[2]) if "." in partes[2] else int(partes[2])
                 elif comando == "VAR_SUBTRAIR": self.variaveis[partes[1]] -= float(partes[2]) if "." in partes[2] else int(partes[2])
+                elif comando == "VAR_MULTIPLICAR":
+                    self.variaveis[partes[1]] *= self.converter_numero(partes[2])
+                elif comando == "VAR_DIVIDIR":
+                    divisor = self.converter_numero(partes[2])
+                    if divisor == 0:
+                        raise ValueError("VAR_DIVIDIR não aceita divisão por zero.")
+                    self.variaveis[partes[1]] /= divisor
+                elif comando == "VAR_RESTO":
+                    divisor = self.converter_numero(partes[2])
+                    if divisor == 0:
+                        raise ValueError("VAR_RESTO não aceita divisor zero.")
+                    self.variaveis[partes[1]] %= divisor
+                elif comando == "VAR_ALEATORIA":
+                    minimo = self.converter_numero(partes[2])
+                    maximo = self.converter_numero(partes[3])
+                    if minimo > maximo:
+                        raise ValueError("VAR_ALEATORIA exige mínimo menor ou igual ao máximo.")
+                    if minimo.is_integer() and maximo.is_integer():
+                        self.variaveis[partes[1]] = random.randint(int(minimo), int(maximo))
+                    else:
+                        self.variaveis[partes[1]] = random.uniform(minimo, maximo)
+                elif comando == "VAR_COPIAR":
+                    if partes[2] not in self.variaveis:
+                        raise ValueError(f"Variável não encontrada: {partes[2]}")
+                    self.variaveis[partes[1]] = self.variaveis[partes[2]]
+                elif comando == "VAR_ARREDONDAR":
+                    casas = int(partes[2]) if len(partes) > 2 else 0
+                    self.variaveis[partes[1]] = round(self.converter_numero(partes[1]), casas)
                     
                 elif comando == "SE_VAR_IGUAL":
                     if float(self.variaveis.get(partes[1], 0)) == float(partes[2]):
@@ -166,6 +381,45 @@ class MotorUalGrafico:
                 elif comando == "SE_VAR_MAIOR":
                     if float(self.variaveis.get(partes[1], 0)) > float(partes[2]):
                         self.executar_bloco(partes[3], usar_delta)
+                elif comando == "SE_VAR_DIFERENTE":
+                    if self.converter_numero(partes[1]) != self.converter_numero(partes[2]):
+                        self.executar_bloco(partes[3], usar_delta)
+                elif comando == "SE_VAR_MENOR_IGUAL":
+                    if self.converter_numero(partes[1]) <= self.converter_numero(partes[2]):
+                        self.executar_bloco(partes[3], usar_delta)
+                elif comando == "SE_VAR_MAIOR_IGUAL":
+                    if self.converter_numero(partes[1]) >= self.converter_numero(partes[2]):
+                        self.executar_bloco(partes[3], usar_delta)
+                elif comando == "SE_VAR_ENTRE":
+                    valor = self.converter_numero(partes[1])
+                    minimo = self.converter_numero(partes[2])
+                    maximo = self.converter_numero(partes[3])
+                    if minimo <= valor <= maximo:
+                        self.executar_bloco(partes[4], usar_delta)
+                elif comando == "SE_SPRITE_VISIVEL":
+                    nome_sprite = partes[1]
+                    if nome_sprite in self.sprites and self.sprites[nome_sprite]["visivel"]:
+                        self.executar_bloco(partes[2], usar_delta)
+                elif comando == "CHAMAR_CENA":
+                    self.chamar_cena(partes[1], usar_delta)
+                elif comando == "REPETIR_CENA":
+                    self.executar_repeticoes(
+                        self.converter_numero(partes[1]),
+                        partes[2],
+                        usar_delta,
+                    )
+                elif comando == "AGENDAR_CENA":
+                    identificador = partes[1]
+                    if identificador not in self.temporizadores:
+                        atraso = self.converter_numero(partes[2])
+                        if atraso < 0:
+                            raise ValueError("AGENDAR_CENA exige um atraso igual ou maior que zero.")
+                        self.temporizadores[identificador] = (
+                            pygame.time.get_ticks() + int(atraso * 1000),
+                            partes[3],
+                        )
+                elif comando == "CANCELAR_CENA_AGENDADA":
+                    self.temporizadores.pop(partes[1], None)
                 
                 elif comando == "TOCAR_MUSICA":
                     try: pygame.mixer.music.load(self.formatar_caminho(partes[1])); pygame.mixer.music.play(-1)
@@ -243,7 +497,11 @@ class MotorUalGrafico:
                     except: 
                         img = pygame.Surface((45, 45)); img.fill((0, 240, 255))
                     rect = img.get_rect(topleft=(int(x), int(y)))
-                    self.sprites[nome] = {"img": img, "rect": rect, "x": x, "y": y, "vx": 0.0, "vy": 0.0, "visivel": True}
+                    self.sprites[nome] = {
+                        "img": img, "rect": rect, "x": x, "y": y,
+                        "vx": 0.0, "vy": 0.0, "ax": 0.0, "ay": 0.0,
+                        "visivel": True,
+                    }
 
                 elif comando == "CRIAR_CUBO":
                     nome = partes[1]
@@ -253,7 +511,11 @@ class MotorUalGrafico:
                     img = pygame.Surface((larg, alt))
                     img.fill(cor)
                     rect = img.get_rect(topleft=(int(x), int(y)))
-                    self.sprites[nome] = {"img": img, "rect": rect, "x": x, "y": y, "vx": 0.0, "vy": 0.0, "visivel": True}
+                    self.sprites[nome] = {
+                        "img": img, "rect": rect, "x": x, "y": y,
+                        "vx": 0.0, "vy": 0.0, "ax": 0.0, "ay": 0.0,
+                        "visivel": True,
+                    }
 
                 # NOVO: Mudar a cor de um cubo no meio do jogo
                 elif comando == "DEFINIR_COR_SPRITE":
@@ -268,6 +530,48 @@ class MotorUalGrafico:
                     if nome in self.sprites:
                         self.sprites[nome]["vx"] = float(partes[2])
                         self.sprites[nome]["vy"] = float(partes[3])
+
+                elif comando == "IMPULSAR_OBJETO":
+                    nome = partes[1]
+                    if nome in self.sprites:
+                        self.sprites[nome]["vx"] += self.converter_numero(partes[2])
+                        self.sprites[nome]["vy"] += self.converter_numero(partes[3])
+
+                elif comando == "DEFINIR_ACELERACAO":
+                    nome = partes[1]
+                    if nome in self.sprites:
+                        self.sprites[nome]["ax"] = self.converter_numero(partes[2])
+                        self.sprites[nome]["ay"] = self.converter_numero(partes[3])
+
+                elif comando == "DESLIZAR_ATE":
+                    nome = partes[1]
+                    velocidade = self.converter_numero(partes[4])
+                    if nome in self.sprites:
+                        if velocidade <= 0:
+                            raise ValueError("DESLIZAR_ATE exige uma velocidade positiva.")
+                        self.deslizamentos[nome] = {
+                            "x": self.converter_numero(partes[2]),
+                            "y": self.converter_numero(partes[3]),
+                            "velocidade": velocidade,
+                        }
+
+                elif comando == "CACAR_ALVO":
+                    nome, alvo = partes[1], partes[2]
+                    velocidade = self.converter_numero(partes[3])
+                    if nome in self.sprites and alvo in self.sprites:
+                        if velocidade <= 0:
+                            raise ValueError("CACAR_ALVO exige uma velocidade positiva.")
+                        self.alvos[nome] = {"sprite": alvo, "velocidade": velocidade}
+
+                elif comando == "PARAR_MOVIMENTO":
+                    nome = partes[1]
+                    self.deslizamentos.pop(nome, None)
+                    self.alvos.pop(nome, None)
+
+                elif comando == "REBATER_RAQUETE":
+                    colidiu = self.rebater_raquete(partes[1], partes[2])
+                    if colidiu and len(partes) > 3:
+                        self.executar_bloco(partes[3], usar_delta=False)
 
                 elif comando == "REBATER_TELA":
                     nome = partes[1]
@@ -344,6 +648,12 @@ class MotorUalGrafico:
                             if cena_colisao:
                                 self.executar_bloco(cena_colisao, usar_delta=False)
 
+                elif comando == "REBATER_TRAJETORIA":
+                    nome1, nome2 = partes[1], partes[2]
+                    cena_colisao = partes[3] if len(partes) > 3 else None
+                    if self.rebater_trajetoria(nome1, nome2) and cena_colisao:
+                        self.executar_bloco(cena_colisao, usar_delta=False)
+
                 elif comando == "MOVER_ALEATORIO":
                     nome = partes[1]
                     if nome in self.sprites:
@@ -351,6 +661,8 @@ class MotorUalGrafico:
                         nx = float(random.randint(int(partes[2]), int(partes[3])))
                         ny = float(random.randint(int(partes[4]), int(partes[5])))
                         self.sincronizar_pos(sp, nx, ny)
+                        sp["prev_x"] = sp["x"]
+                        sp["prev_y"] = sp["y"]
 
                 elif comando == "OCULTAR_SPRITE":
                     if partes[1] in self.sprites: self.sprites[partes[1]]["visivel"] = False
@@ -359,7 +671,10 @@ class MotorUalGrafico:
 
                 elif comando == "MOVER_PARA":
                     if partes[1] in self.sprites:
-                        self.sincronizar_pos(self.sprites[partes[1]], float(partes[2]), float(partes[3]))
+                        sp = self.sprites[partes[1]]
+                        self.sincronizar_pos(sp, float(partes[2]), float(partes[3]))
+                        sp["prev_x"] = sp["x"]
+                        sp["prev_y"] = sp["y"]
 
                 elif comando == "MOVER":
                     if partes[1] in self.sprites:
@@ -489,13 +804,26 @@ class MotorUalGrafico:
                     except: pass
 
                 for sp in self.sprites.values():
-                    if sp["visivel"] and (sp["vx"] != 0 or sp["vy"] != 0):
-                        nx = sp["x"] + sp["vx"] * self.fator_fps
-                        ny = sp["y"] + sp["vy"] * self.fator_fps
-                        self.sincronizar_pos(sp, nx, ny)
+                    if sp["visivel"]:
+                        sp["prev_x"] = sp["x"]
+                        sp["prev_y"] = sp["y"]
+                        sp["vx"] += sp.get("ax", 0.0) * self.fator_fps
+                        sp["vy"] += sp.get("ay", 0.0) * self.fator_fps
+                        if sp["vx"] != 0 or sp["vy"] != 0:
+                            nx = sp["x"] + sp["vx"] * self.fator_fps
+                            ny = sp["y"] + sp["vy"] * self.fator_fps
+                            self.sincronizar_pos(sp, nx, ny)
+
+                self.atualizar_movimentos_especiais()
                 
                 if "loop" in self.cenas: 
                     self.executar_bloco("loop", usar_delta=True)
+
+                agora = pygame.time.get_ticks()
+                for identificador, (prazo, nome_cena) in list(self.temporizadores.items()):
+                    if agora >= prazo:
+                        del self.temporizadores[identificador]
+                        self.executar_bloco(nome_cena, usar_delta=False)
                 
                 # Desenha Sprites com suporte a Camera Shake
                 for dados in self.sprites.values():
@@ -627,7 +955,7 @@ class LunarLauncherUAL:
         self.criar_botao_menu(sidebar, "💻  SCRIPT STUDIO", lambda: self.trocar_aba(self.aba_script))
         self.criar_botao_menu(sidebar, "🛠️  MODS & TELA CHEIA", lambda: self.trocar_aba(self.aba_mods))
         
-        lbl_status = tk.Label(sidebar, text="● Ultimate Engine (v9.0)", font=("Segoe UI", 9, "bold"), bg=self.c_sidebar, fg=self.c_green)
+        lbl_status = tk.Label(sidebar, text="● Ultimate Engine (v9.1)", font=("Segoe UI", 9, "bold"), bg=self.c_sidebar, fg=self.c_green)
         lbl_status.pack(side="bottom", pady=20)
         
         self.main_area = tk.Frame(self.root, bg=self.c_bg)
