@@ -1138,6 +1138,7 @@ class LunarLauncherUAL:
         self.pagina_atual = "biblioteca"
         self.carregando_loja = False
         self.downloads_em_andamento = set()
+        self.progresso_downloads = {}
         self.fila_background = queue.Queue()
         self.poll_background_ativo = False
         self.tela_carregamento = None
@@ -1351,6 +1352,8 @@ class LunarLauncherUAL:
         self.trocar_aba(self.aba_loja, "loja")
         if not self.catalogo_loja and not self.carregando_loja:
             self.carregar_catalogo_loja()
+        elif self.catalogo_loja:
+            self.mostrar_jogos_loja()
 
     def obter_configs(self):
         fps_str = self.var_fps.get()
@@ -1395,12 +1398,20 @@ class LunarLauncherUAL:
             fg=self.c_sub, wraplength=570, justify="left",
         )
         self.subtitulo_destaque.pack(anchor="w", pady=(0, 6))
+        acoes_destaque = tk.Frame(detalhes, bg="#111c30")
+        acoes_destaque.pack(anchor="w", pady=(13, 0))
         self.botao_jogar = RoundedButton(
-            detalhes, "▶   JOGAR AGORA", self.rodar_jogo_selecionado,
+            acoes_destaque, "▶   JOGAR AGORA", self.rodar_jogo_selecionado,
             width=190, background=self.c_green, foreground="#07150c",
             hover_background="#62ffae",
         )
-        self.botao_jogar.pack(anchor="w", pady=(13, 0))
+        self.botao_jogar.pack(side="left")
+        self.botao_desinstalar = RoundedButton(
+            acoes_destaque, "⌫  DESINSTALAR", self.desinstalar_jogo_selecionado,
+            width=150, background="#4a2334", foreground="#ffffff",
+            hover_background="#713149", font=("Segoe UI", 9, "bold"),
+        )
+        self.botao_desinstalar.pack(side="left", padx=(10, 0))
 
         linha_biblioteca = tk.Frame(self.aba_play, bg=self.c_bg)
         linha_biblioteca.pack(fill="x", pady=(0, 8))
@@ -1609,6 +1620,41 @@ class LunarLauncherUAL:
         self.titulo_destaque.config(text=jogo["nome"])
         descricao = jogo.get("descricao", "Uma demonstração para experimentar o motor UAL")
         self.subtitulo_destaque.config(text=descricao)
+        if jogo["demo"]:
+            self.botao_desinstalar.set_text("DEMO INCLUÍDA")
+            self.botao_desinstalar.set_enabled(False)
+        else:
+            self.botao_desinstalar.set_text("⌫  DESINSTALAR")
+            self.botao_desinstalar.set_enabled(True)
+
+    def desinstalar_jogo_selecionado(self):
+        jogo = self.jogo_selecionado
+        if jogo is None or jogo.get("demo"):
+            return
+        nome_jogo = jogo["nome"]
+        if not messagebox.askyesno(
+            "Desinstalar jogo",
+            f"Deseja desinstalar {nome_jogo}?\n\nO arquivo do jogo será removido da biblioteca.",
+            parent=self.root,
+        ):
+            return
+        try:
+            os.remove(jogo["caminho"])
+        except OSError as erro:
+            messagebox.showerror(
+                "Não foi possível desinstalar",
+                f"Não foi possível remover {nome_jogo}.\n\n{erro}",
+                parent=self.root,
+            )
+            return
+        self.jogo_selecionado = None
+        self.atualizar_biblioteca()
+        self.mostrar_jogos_loja()
+        messagebox.showinfo(
+            "Jogo desinstalado",
+            f"{nome_jogo} foi removido da biblioteca.",
+            parent=self.root,
+        )
 
     def rodar_jogo_selecionado(self):
         jogo = self.jogo_selecionado
@@ -1746,6 +1792,8 @@ class LunarLauncherUAL:
                 self._catalogo_carregado(*dados)
             elif tipo == "download":
                 self._download_concluido(*dados)
+            elif tipo == "progresso":
+                self._atualizar_progresso_download(*dados)
         if self.carregando_loja or self.downloads_em_andamento:
             self.root.after(100, self._processar_fila_background)
         else:
@@ -1920,18 +1968,43 @@ class LunarLauncherUAL:
         ).pack(fill="x", anchor="w", pady=(5, 8))
         instalado = self._jogo_ja_instalado(jogo["arquivo"])
         baixando = jogo["arquivo"] in self.downloads_em_andamento
-        botao = RoundedButton(
-            detalhes,
-            "✓   INSTALADO" if instalado else "BAIXANDO..." if baixando else "↓   BAIXAR",
-            None if instalado or baixando else lambda item=jogo: self.baixar_jogo_loja(item),
-            width=145, height=36,
-            background=self.c_green if instalado else self.c_accent,
-            foreground="#07150c" if instalado else "#06131b",
-            hover_background="#62ffae" if instalado else "#56f4ff",
-        )
-        botao.pack(anchor="w")
-        if instalado or baixando:
+        if instalado:
+            botao = RoundedButton(
+                detalhes,
+                "✓   INSTALADO",
+                None,
+                width=145, height=36,
+                background=self.c_green,
+                foreground="#07150c",
+                hover_background="#62ffae",
+            )
+            botao.pack(anchor="w")
             botao.set_enabled(False)
+        elif baixando:
+            lbl_pct = tk.Label(
+                detalhes, text="Baixando... 0%",
+                font=("Segoe UI", 9, "bold"),
+                bg=self.c_card, fg=self.c_accent, anchor="w",
+            )
+            lbl_pct.pack(anchor="w", pady=(2, 2))
+            barra = ttk.Progressbar(
+                detalhes, orient="horizontal", length=145, mode="determinate",
+            )
+            barra.pack(anchor="w")
+            barra["maximum"] = 100
+            barra["value"] = 0
+            self.progresso_downloads[jogo["arquivo"]] = (lbl_pct, barra)
+        else:
+            botao = RoundedButton(
+                detalhes,
+                "↓   BAIXAR",
+                lambda item=jogo: self.baixar_jogo_loja(item),
+                width=145, height=36,
+                background=self.c_accent,
+                foreground="#06131b",
+                hover_background="#56f4ff",
+            )
+            botao.pack(anchor="w")
 
     def baixar_jogo_loja(self, jogo):
         nome_arquivo = jogo["arquivo"]
